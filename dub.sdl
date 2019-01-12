@@ -1,0 +1,18 @@
+name "wasm-reader"
+description "A wasm binary reader"
+authors "Sebastiaan Koppe"
+copyright "Copyright © 2019, Sebastiaan Koppe"
+license "MIT"
+
+configuration "library" {
+    targetType "library"
+}
+configuration "unittest" {
+    dependency "unit-threaded" version="*"
+
+    targetType "executable"
+    mainSourceFile "bin/ut.d"
+    excludedSourceFiles "source/app.d"
+    targetType "executable"
+    preBuildCommands "dub run unit-threaded -c gen_ut_main -- -f bin/ut.d"
+}

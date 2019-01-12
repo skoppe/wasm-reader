@@ -1,0 +1,8 @@
+box: dlang2/ldc-ubuntu:1.13.0
+
+build:
+  steps:
+    - script:
+        name: run tests
+        code: |
+          dub test
