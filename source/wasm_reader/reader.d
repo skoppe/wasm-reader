@@ -5,6 +5,7 @@ import std.typecons;
 import std.meta;
 import std.traits;
 import std.range;
+import std.algorithm : copy;
 
 version(unittest) {
   import unit_threaded;
@@ -12,25 +13,30 @@ version(unittest) {
 
 struct encoding(T) { }
 struct condition(string cond) { }
-struct length(string field) { }
+struct length(alias field) { }
+struct positionMark(string name) { }
 
 struct header {
   uint version_;
 }
 
 struct Section {
+  static auto calcPayloadLength(ref Section section, size_t[string] marks) {
+    if (section.id == 0)
+      return section.payload_len;
+    return section.payload_len - (marks["b"] - marks["a"]);
+  }
   @encoding!varuint7
   uint id;
   @encoding!varuint32
   uint payload_len;
-  @condition!"id == 0" {
+  @positionMark!"a" @condition!"id == 0" {
     @encoding!varuint32
       uint name_len;
     @length!"name_len"
       string name;
   }
-  // TODO: length is not payload_len, length is payload_len - name_len - name
-  @length!"payload_len"
+  @positionMark!"b" @length!calcPayloadLength
   ubyte[] payload;
 }
 
@@ -103,6 +109,7 @@ auto readSections(Range)(auto ref Range range) {
   return generate!(()=>range.read!Section);
 }
 
+@("file")
 unittest {
   import std.stdio;
   import std.algorithm;
@@ -110,6 +117,26 @@ unittest {
   auto input = File("resource/example.wasm").byChunk(4096).joiner().drop(8);
   auto sections = input.readSections.take(2).array();
   sections.shouldEqual([Section(1, 29, 0, "", [6, 96, 0, 0, 96, 2, 127, 127, 1, 127, 96, 1, 127, 0, 96, 1, 127, 1, 127, 96, 1, 125, 1, 127, 96, 2, 127, 127, 0]), Section(2, 181, 0, "", [7, 3, 101, 110, 118, 26, 115, 112, 97, 115, 109, 95, 97, 100, 100, 80, 114, 105, 109, 105, 116, 105, 118, 101, 95, 95, 115, 116, 114, 105, 110, 103, 0, 1, 3, 101, 110, 118, 11, 99, 111, 110, 115, 111, 108, 101, 95, 108, 111, 103, 0, 2, 3, 101, 110, 118, 23, 115, 112, 97, 115, 109, 95, 97, 100, 100, 80, 114, 105, 109, 105, 116, 105, 118, 101, 95, 95, 105, 110, 116, 0, 3, 3, 101, 110, 118, 25, 115, 112, 97, 115, 109, 95, 97, 100, 100, 80, 114, 105, 109, 105, 116, 105, 118, 101, 95, 95, 102, 108, 111, 97, 116, 0, 4, 3, 101, 110, 118, 21, 68, 111, 99, 117, 109, 101, 110, 116, 95, 108, 111, 99, 97, 116, 105, 111, 110, 95, 71, 101, 116, 0, 5, 3, 101, 110, 118, 18, 115, 112, 97, 115, 109, 95, 114, 101, 109, 111, 118, 101, 79, 98, 106, 101, 99, 116, 0, 2, 3, 101, 110, 118, 6, 109, 101, 109, 111, 114, 121, 2, 0, 2])]);
+}
+
+struct RangeWithPosition(Range) if (is(ElementType!Range == ubyte)) {
+  private { Range* range; size_t pos = 0; }
+  this(Range* range) {
+    this.range = range;
+  }
+  auto front() {
+    return (*range).front();
+  }
+  auto empty() {
+    return range.empty;
+  }
+  void popFront() {
+    (*range).popFront();
+    pos += 1;
+  }
+  auto getPosition() {
+    return pos;
+  }
 }
 
 template read(T) {
@@ -123,38 +150,56 @@ template read(T) {
       }
       return items;
     } else {
-      auto t = cast(T)(range.take(U.sizeof*cnt).array);
-      range.popFrontN(U.sizeof*cnt);
+      auto taker = Take!Range(range, U.sizeof*cnt);
+      auto t = cast(T)(taker.array);
       return t;
     }
   }
-  T read(Range)(auto ref Range range) {
+  T read(Range)(auto ref Range plainRange) {
     static if (isAggregateType!T) {
+      auto range = RangeWithPosition!Range(&plainRange);
       T t;
+      size_t[string] marks;
+      assert(range.getPosition() == 0);
       static foreach(field; T.tupleof) {{
+          static if (hasUDA!(field, positionMark)) {
+            alias positionMarks = getUDAs!(field, positionMark);
+            static foreach(marker; positionMarks) {{
+                enum mark = TemplateArgsOf!(marker)[0];
+                marks[mark] = range.getPosition();
+              }}
+          }
           static if (hasUDA!(field, condition)) {
             alias conditions = getUDAs!(field, condition);
             static foreach(c; conditions) {{
                 enum condition = TemplateArgsOf!(c)[0];
-                mixin("if (t."~condition~") readMember!(field.stringof)(range, t);");
+                mixin("if (t."~condition~") readMember!(field.stringof)(range, t, marks);");
               }}
           } else {
-            readMember!(field.stringof)(range, t);
+            readMember!(field.stringof)(range, t, marks);
           }
         }}
       return t;
     } else static if (is(T == enum)) {
       static if (hasUDA!(T, encoding)) {
         alias encodingType = TemplateArgsOf!(getUDAs!(T, encoding)[0])[0];
-        return readEncoding!(encodingType, T)(range);
+        return readEncoding!(encodingType, T)(plainRange);
       } else {
-        T t = (cast(T[])(range[0 .. T.sizeof]))[0];
-        range.popFrontN(T.sizeof);
+        T t;
+        ubyte[] mem = (cast(ubyte[])(&t)[0..1]);
+        foreach(idx; 0..mem.length) {
+          mem[idx] = plainRange.front;
+          plainRange.popFront();
+        }
         return t;
       }
     } else {
-      T t = (cast(T[])(range[0 .. T.sizeof]))[0];
-      range.popFrontN(T.sizeof);
+      T t;
+      ubyte[] mem = (cast(ubyte[])(&t)[0..1]);
+      foreach(idx; 0..mem.length) {
+        mem[idx] = plainRange.front;
+        plainRange.popFront();
+      }
       return t;
     }
   }
@@ -165,15 +210,21 @@ Type readEncoding(Encoding, Type, Range)(auto ref Range range) {
 }
 
 template readMember(string name) {
-  void readMember(Range, T)(auto ref Range range, ref T t) {
+  void readMember(Range, T)(auto ref Range range, ref T t, ref size_t[string] marks) {
     alias field = AliasSeq!(__traits(getMember, t, name))[0];
     alias Field = typeof(field);
     static if (is(Field : U[], U)) {
       assert(hasUDA!(field, length));
       alias lengths = getUDAs!(field, length);
-      enum length = TemplateArgsOf!(lengths)[0];
-      size_t len = __traits(getMember, t, length);
-      __traits(getMember, t, name) = read!(Field)(range, len);
+      static if (is(typeof(TemplateArgsOf!(lengths[0])[0]) == string)) {
+        enum length = TemplateArgsOf!(lengths[0])[0];
+        size_t len = __traits(getMember, t, length);
+        __traits(getMember, t, name) = read!(Field)(range, len);
+      } else {
+        alias lengthFun = TemplateArgsOf!(lengths[0])[0];
+        size_t len = lengthFun(t, marks);
+        __traits(getMember, t, name) = read!(Field)(range, len);
+      }
     } else static if (hasUDA!(field, encoding)) {
       alias EncodingType = TemplateArgsOf!(getUDAs!(field, encoding)[0])[0];
       __traits(getMember, t, name) = readEncoding!(EncodingType, Field)(range);
@@ -191,6 +242,12 @@ unittest {
 unittest {
   ubyte[] data = [0x01, 0x1d, 0x06, 0x60, 0x01, 0x7f, 0x00, 0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7f, 0x60, 0x01, 0x7f, 0x01, 0x7f, 0x60, 0x01, 0x7d, 0x01, 0x7f, 0x60, 0x02, 0x7f, 0x7f, 0x00, 0x60, 0x00, 0x00];
   data.read!Section.shouldEqual(Section(1, 29, 0, "", [6, 96, 1, 127, 0, 96, 2, 127, 127, 1, 127, 96, 1, 127, 1, 127, 96, 1, 125, 1, 127, 96, 2, 127, 127, 0, 96, 0, 0]));
+  data.length.shouldEqual(0);
+}
+
+unittest {
+  ubyte[] data = [0x00, 0x1d, 0x01, 65, 0x06, 0x60, 0x01, 0x7f, 0x00, 0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7f, 0x60, 0x01, 0x7f, 0x01, 0x7f, 0x60, 0x01, 0x7d, 0x01, 0x7f, 0x60, 0x02, 0x7f, 0x7f, 0x00, 0x60, 0x00, 0x00];
+  data.read!Section.shouldEqual(Section(0, 29, 1, "A", [6, 96, 1, 127, 0, 96, 2, 127, 127, 1, 127, 96, 1, 127, 1, 127, 96, 1, 125, 1, 127, 96, 2, 127, 127, 0, 96, 0, 0]));
   data.length.shouldEqual(0);
 }
 
