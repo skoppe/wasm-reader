@@ -98,36 +98,9 @@ struct import_entry {
   @condition!"kind == external_kind.Global" global_type globalType;
 }
 
-struct Sections(Range) {
-  private {
-    Range range;
-    bool initialized = false;
-    Section section;
-    void readSection() {
-      section = range.read!Section;
-      initialized = true;
-    }
-  }
-  this(ref Range range) {
-    this.range = range;
-  }
-  @property bool empty() {
-    return range.empty;
-  }
-  Section front() {
-    if (!initialized)
-      readSection();
-    return section;
-  }
-  void popFront() {
-    readSection();
-  }
-}
-
-static assert(isInputRange!(Sections!(ubyte[])));
-
 auto readSections(Range)(auto ref Range range) {
-  return Sections!(Range)(range);
+  import std.range : generate;
+  return generate!(()=>range.read!Section);
 }
 
 unittest {
