@@ -38,6 +38,9 @@ struct Section {
   }
   @positionMark!"b" @length!calcPayloadLength
   ubyte[] payload;
+  uint size() {
+    return 1 + sizeOf!(varuint32)(payload_len) + payload_len;
+  }
 }
 
 struct import_section {

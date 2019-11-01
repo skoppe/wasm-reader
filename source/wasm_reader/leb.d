@@ -17,6 +17,12 @@ struct varint(T) {
   }
 }
 
+template sizeOf(var) if (is(var : varuint!T, T) || is(var : varint!T, T)) {
+  auto sizeOf(T)(T t) {
+    import core.bitop;
+    return bsr(t) / 7 + 1;
+  }
+}
 alias varuint1 = varuint!bool;
 alias varuint7 = varuint!ubyte;
 alias varuint32 = varuint!uint;
