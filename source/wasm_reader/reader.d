@@ -22,7 +22,7 @@ struct header {
 
 struct Section {
   static auto calcPayloadLength(ref Section section, size_t[string] marks) {
-    if (section.id == 0)
+    if (section.id != 0)
       return section.payload_len;
     return section.payload_len - (marks["b"] - marks["a"]);
   }
@@ -30,8 +30,8 @@ struct Section {
   uint id;
   @encoding!varuint32
   uint payload_len;
-  @positionMark!"a" @condition!"id == 0" {
-    @encoding!varuint32
+  @condition!"id == 0" {
+    @positionMark!"a" @encoding!varuint32
       uint name_len;
     @length!"name_len"
       string name;
