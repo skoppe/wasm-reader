@@ -168,18 +168,21 @@ struct RangeWithPosition(Range) if (is(ElementType!Range == ubyte)) {
 
 template read(T) {
   import std.traits;
-  T read(Range)(auto ref Range range, size_t cnt) if (isArray!T) {
+  T read(Range)(ref Range range, size_t cnt) if (isArray!T) {
     static if(is(T : U[], U)) {}
     static if (isAggregateType!U) {
-      U[] items = new U[cnt];
+      Unqual!U[] items = new Unqual!U[cnt];
       foreach(idx; 0..cnt) {
         items[idx] = .read!U(range);
       }
-      return items;
+      return cast(T)items;
     } else {
-      auto taker = Take!Range(range, U.sizeof*cnt);
-      auto t = cast(T)(taker.array);
-      return t;
+      Unqual!U[] items = new Unqual!U[cnt];
+      foreach(idx; 0..cnt) {
+        items[idx] = range.front();
+        range.popFront();
+      }
+      return cast(T)items;
     }
   }
   T read(Range)(auto ref Range plainRange) {
